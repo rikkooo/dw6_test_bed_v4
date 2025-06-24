@@ -255,7 +255,7 @@ def push_to_remote(branch='main'):
         sys.exit(1)
     authenticated_url = _get_authenticated_remote_url(repo)
     try:
-        repo.git.push(authenticated_url, branch, '--tags')
+        repo.git.push(authenticated_url, branch, '--tags', '--force')
         print(f"[GIT] Successfully pushed branch '{branch}' and all tags to remote.")
     except git.GitCommandError as e:
         print(f"ERROR: Failed to push to remote.\n{e}", file=sys.stderr)
