@@ -249,14 +249,14 @@ def add_commit_files(message, files):
         print(f"ERROR: Failed to create commit for files {files}.\n{e}", file=sys.stderr)
 
 def push_to_remote(branch='main'):
-    """Pushes the specified branch to the 'origin' remote using token authentication."""
+    """Pushes the specified branch and all tags to the 'origin' remote using token authentication."""
     repo = get_repo()
     if not is_github_token_present():
         sys.exit(1)
     authenticated_url = _get_authenticated_remote_url(repo)
     try:
-        repo.git.push(authenticated_url, branch)
-        print(f"[GIT] Successfully pushed branch '{branch}' to remote.")
+        repo.git.push(authenticated_url, branch, '--tags')
+        print(f"[GIT] Successfully pushed branch '{branch}' and all tags to remote.")
     except git.GitCommandError as e:
         print(f"ERROR: Failed to push to remote.\n{e}", file=sys.stderr)
         sys.exit(1)
