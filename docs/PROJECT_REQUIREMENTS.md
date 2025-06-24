@@ -41,10 +41,11 @@ This project aims to harden the DW6 protocol by addressing critical flaws identi
     -   The `pytest` output must be analyzed to confirm that at least one test was collected and run.
     -   If `pytest` runs but collects zero tests, the approval must fail.
 
--   **Problem:** The underlying causes of the setup failures and authentication issues need to be investigated.
--   **Goal:** Conduct research to identify the best technical solutions for the problems identified.
+## 5. Requirement: Automated Push to Remote Repository
+
+-   **Problem:** The workflow does not automatically push committed changes and tags to the remote GitHub repository, requiring a manual step that can be forgotten.
+-   **Goal:** Automate the push to the remote repository after a successful deployment validation.
 -   **Acceptance Criteria:**
-    -   Investigate best practices for scripting virtual environment creation and activation in Bash/Python.
-    -   Research methods for robustly handling dependency installation with `pip` and `pyproject.toml`.
-    -   Identify the best libraries (e.g., `python-dotenv`, `gitpython`) for managing environment variables and programmatic Git operations.
-    -   Produce a research summary outlining the recommended tools and implementation strategies.
+    -   After the `Deployer` stage is successfully validated and approved, the `state_manager` must automatically call the `git_handler.push_to_remote` function.
+    -   The push must include all committed changes and any new tags.
+    -   The workflow must provide clear feedback indicating whether the push was successful or not.

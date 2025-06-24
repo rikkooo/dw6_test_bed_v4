@@ -43,5 +43,27 @@ class TestStateManager(unittest.TestCase):
         handle.write.assert_any_call('```diff\n')
         handle.write.assert_any_call(mock_diff)
 
+    @patch('dw6.state_manager.git_handler.push_to_remote')
+    @patch('dw6.state_manager.git_handler.get_local_tags_for_commit')
+    @patch('dw6.state_manager.git_handler.get_remote_tags_with_commits')
+    @patch('dw6.state_manager.git_handler.get_latest_commit_hash')
+    @patch('dw6.state_manager.git_handler.is_github_token_present')
+    def test_deployer_validation_pushes_to_remote(self, mock_is_token, mock_get_hash, mock_get_remote_tags, mock_get_local_tags, mock_push):
+        """Test that the Deployer stage validation calls push_to_remote."""
+        # Arrange
+        mock_is_token.return_value = True
+        mock_get_hash.return_value = 'dummy_hash'
+        mock_get_remote_tags.return_value = {'v1.0': 'dummy_hash'}
+        
+        with patch('dw6.state_manager.WorkflowState.save'):
+            manager = WorkflowManager()
+        manager.current_stage = 'Deployer'
+
+        # Act
+        manager._validate_deployment()
+
+        # Assert
+        mock_push.assert_called_once()
+
 if __name__ == '__main__':
     unittest.main()
