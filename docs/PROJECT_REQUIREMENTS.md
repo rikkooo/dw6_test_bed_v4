@@ -22,7 +22,24 @@ This project aims to harden the DW6 protocol by addressing critical flaws identi
     -   The setup workflow must guide the user in creating a `.env` file with the required `GITHUB_TOKEN` if one does not exist.
     -   No UI-based authentication prompts should appear during any part of the workflow.
 
-## 3. Requirement: Research and Propose Solutions
+## 3. Requirement: Automated Coder Deliverable Generation
+
+-   **Problem:** The `Coder` stage lacks a formal, automated deliverable, making it difficult to track and review the exact changes implemented.
+-   **Goal:** Automatically generate a `coder_deliverable.md` file that summarizes all code changes made during the `Coder` stage.
+-   **Acceptance Criteria:**
+    -   When the `Coder` stage is approved, a `coder_deliverable.md` file is automatically created.
+    -   The deliverable must contain a list of all modified files.
+    -   The deliverable must include the full `git diff` from the start of the `Coder` stage to the end.
+
+## 4. Requirement: Enforce Test Presence in Validator Stage
+
+-   **Problem:** The `Validator` stage can be approved even if the `tests` directory is empty or contains no actual tests, allowing code to pass without verification.
+-   **Goal:** Ensure that the `Validator` stage fails if no tests are found and executed.
+-   **Acceptance Criteria:**
+    -   The `state_manager` must check for the existence of test files (e.g., `tests/test_*.py`) before running `pytest`.
+    -   If no test files are found, the `Validator` stage approval must fail with a clear error message.
+    -   The `pytest` output must be analyzed to confirm that at least one test was collected and run.
+    -   If `pytest` runs but collects zero tests, the approval must fail.
 
 -   **Problem:** The underlying causes of the setup failures and authentication issues need to be investigated.
 -   **Goal:** Conduct research to identify the best technical solutions for the problems identified.

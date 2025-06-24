@@ -3,10 +3,9 @@ import sys
 import os
 import subprocess
 from pathlib import Path
-
 from datetime import datetime, timezone
+from dw6 import git_handler
 
-# These would typically be in dw6/config.py
 MASTER_FILE = "docs/WORKFLOW_MASTER.md"
 REQUIREMENTS_FILE = "docs/PROJECT_REQUIREMENTS.md"
 APPROVAL_FILE = "logs/approvals.log"
@@ -14,13 +13,10 @@ STAGES = ["Engineer", "Researcher", "Coder", "Validator", "Deployer"]
 DELIVERABLE_PATHS = {
     "Engineer": "deliverables/engineering",
     "Coder": "deliverables/coding",
-    "Researcher": "deliverables/Researcher", # Corrected path to match setup script
+    "Researcher": "deliverables/Researcher",
     "Validator": "deliverables/testing",
     "Deployer": "deliverables/deployment",
 }
-
-# Assuming git_handler provides these functions
-from dw6 import git_handler
 
 class WorkflowManager:
     def __init__(self):
@@ -39,18 +35,24 @@ class WorkflowManager:
         self.state.save()
         print(f"--- Stage {self.current_stage} Approved. New Stage: {self.state.get('CurrentStage')} ---")
 
+    def _validate_stage(self):
+        print(f"Validating deliverables for stage: {self.current_stage}")
+        if self.current_stage == "Coder":
+            self._generate_coder_deliverable()
+        elif self.current_stage == "Validator":
+            self._validate_tests()
+        elif self.current_stage == "Deployer":
+            self._validate_deployment()
+        print("Stage validation successful.")
+
     def _generate_coder_deliverable(self):
-        """Generates the coder deliverable file with a summary of changes."""
         print("Generating Coder deliverable...")
         changed_files, diff_string = git_handler.get_changes_since_last_commit()
-
         if not changed_files:
             print("No changes detected since the start of the Coder stage.")
             return
-
         deliverable_path = Path("deliverables/coding/coder_deliverable.md")
         deliverable_path.parent.mkdir(parents=True, exist_ok=True)
-
         with open(deliverable_path, "w") as f:
             f.write("# Coder Deliverable\n\n")
             f.write("## Changed Files\n\n")
@@ -60,62 +62,55 @@ class WorkflowManager:
             f.write("```diff\n")
             f.write(diff_string)
             f.write("\n```")
-        
         print(f"Coder deliverable created at: {deliverable_path}")
 
-    def get_status(self):
-        print("--- DW6 Workflow Status ---")
-        for key, value in self.state.data.items():
-            print(f"- {key}: {value}")
-        print("---------------------------")
-
-    def _transition_to_next_stage(self):
-        current_index = STAGES.index(self.current_stage)
-        if self.current_stage == "Deployer":
-            self._complete_requirement_cycle()
-            next_stage = "Engineer"
-        else:
-            next_stage = STAGES[current_index + 1]
-        self.state.set("CurrentStage", next_stage)
-        self.current_stage = next_stage
-
-    def _validate_stage(self):
-        print(f"Validating deliverables for stage: {self.current_stage}")
-        if self.current_stage == "Coder":
-            self._generate_coder_deliverable()
-        elif self.current_stage == "Validator":
-            print("Running tests...")
-            # The command needs to be adapted for the venv
+    def _validate_tests(self):
+        print("Running test validation...")
+        tests_dir = Path("tests")
+        if not tests_dir.is_dir() or not any(tests_dir.glob("test_*.py")):
+            print("ERROR: No test files found in the 'tests' directory.", file=sys.stderr)
+            sys.exit(1)
+        try:
             venv_python = os.path.join(os.getcwd(), "venv", "bin", "python")
+            collect_result = subprocess.run([venv_python, "-m", "pytest", "--collect-only"], capture_output=True, text=True)
+            if "no tests collected" in collect_result.stdout.lower():
+                print("ERROR: Pytest collected no tests.", file=sys.stderr)
+                print(collect_result.stdout, file=sys.stderr)
+                sys.exit(1)
+            match = re.search(r"collected (\d+) items", collect_result.stdout)
+            if not match or int(match.group(1)) == 0:
+                print("ERROR: Pytest collected no tests.", file=sys.stderr)
+                print(collect_result.stdout, file=sys.stderr)
+                sys.exit(1)
+            print(f"Pytest collected {match.group(1)} tests. Running them now...")
             result = subprocess.run([venv_python, "-m", "pytest"], capture_output=True, text=True)
             if result.returncode != 0:
-                print("ERROR: Pytest validation failed.", file=sys.stderr)
+                print("Pytest validation failed:", file=sys.stderr)
                 print(result.stdout, file=sys.stderr)
                 print(result.stderr, file=sys.stderr)
                 sys.exit(1)
             print("Pytest validation successful.")
+        except FileNotFoundError:
+            print("ERROR: pytest command not found or venv is not set up correctly.", file=sys.stderr)
+            sys.exit(1)
 
-        elif self.current_stage == "Deployer":
-            print("Validating deployment...")
-            if not git_handler.is_github_token_present():
+    def _validate_deployment(self):
+        print("Validating deployment...")
+        if not git_handler.is_github_token_present():
+            sys.exit(1)
+        latest_commit = git_handler.get_latest_commit_hash()
+        all_remote_tags = git_handler.get_remote_tags_with_commits()
+        if all_remote_tags is None:
+            all_remote_tags = {}
+        matching_tags = [tag for tag, commit in all_remote_tags.items() if commit == latest_commit]
+        if not matching_tags:
+            print("Warning: Could not retrieve remote tags. Falling back to local tag check.")
+            local_tags = git_handler.get_local_tags_for_commit(latest_commit)
+            if not local_tags:
+                print(f"ERROR: The latest commit ({latest_commit[:7]}) has not been tagged.", file=sys.stderr)
                 sys.exit(1)
-            latest_commit = git_handler.get_latest_commit_hash()
-            all_remote_tags = git_handler.get_remote_tags_with_commits()
-            matching_tags = [tag for tag, commit in all_remote_tags.items() if commit == latest_commit]
-
-            if matching_tags:
-                                print(f"Deployment validation successful: Latest commit is tagged with: {', '.join(matching_tags)}.")
-            else:
-                print("Warning: Could not retrieve remote tags. Falling back to local tag check.")
-                local_tags = git_handler.get_local_tags_for_commit(latest_commit)
-                if not local_tags:
-                    print(f"ERROR: The latest commit ({latest_commit[:7]}) has not been tagged.", file=sys.stderr)
-                    print("No remote repository is configured or the tag has not been pushed.", file=sys.stderr)
-                    print("Please tag the commit locally (e.g., 'git tag -a v1.0 -m \"Release 1.0\"').", file=sys.stderr)
-                    sys.exit(1)
-                print(f"Deployment validation successful: Latest commit is tagged locally with: {', '.join(local_tags)}.")
-
-        print("Stage validation successful.")
+            matching_tags = local_tags
+        print(f"Deployment validation successful: Latest commit is tagged with: {', '.join(matching_tags)}.")
 
     def _run_pre_transition_actions(self):
         pass
@@ -124,213 +119,53 @@ class WorkflowManager:
         if self.current_stage == "Coder":
             git_handler.save_current_commit_sha()
 
+    def _transition_to_next_stage(self):
+        current_index = STAGES.index(self.current_stage)
+        if current_index == len(STAGES) - 1:
+            self._complete_requirement_cycle()
+            self.current_stage = STAGES[0]
+        else:
+            self.current_stage = STAGES[current_index + 1]
+        self.state.set("CurrentStage", self.current_stage)
+
     def _complete_requirement_cycle(self):
         req_id = int(self.state.get("RequirementPointer"))
-        
         os.makedirs("logs", exist_ok=True)
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         with open(APPROVAL_FILE, "a") as f:
             f.write(f"Requirement {req_id} approved at {timestamp}\n")
         print(f"[INFO] Logged approval for Requirement ID {req_id}.")
-        
-        if os.path.exists(REQUIREMENTS_FILE):
-            lines = open(REQUIREMENTS_FILE, "r").read().splitlines()
-            for i, line in enumerate(lines):
-                if f"ID {req_id}" in line and "[ ]" in line:
-                    lines[i] = line.replace("[ ]", "[x]", 1)
-                    with open(REQUIREMENTS_FILE, "w") as f:
-                        f.write("\n".join(lines) + "\n")
-                    print(f"Updated checkbox for Req ID {req_id} in {REQUIREMENTS_FILE}")
-                    break
-
         next_req_id = req_id + 1
         self.state.set("RequirementPointer", next_req_id)
         print(f"[INFO] Advanced to next requirement: {next_req_id}.")
 
 class WorkflowState:
     def __init__(self):
-        if not os.path.exists(MASTER_FILE):
-            print(f"Error: Master workflow file not found at {MASTER_FILE}", file=sys.stderr)
-            sys.exit(1)
-        self.lines = open(MASTER_FILE, "r").read().splitlines()
+        self.state_file = Path("logs/workflow_state.txt")
         self.data = {}
-        self._parse()
+        if self.state_file.exists():
+            with open(self.state_file, "r") as f:
+                for line in f:
+                    key, value = line.strip().split("=", 1)
+                    self.data[key] = value
+        else:
+            self.initialize_state()
 
-    def _parse(self):
-        for line in self.lines:
-            cleaned_line = line.strip()
-            if cleaned_line.startswith("-"):
-                cleaned_line = cleaned_line[1:].lstrip()
-            
-            if ":" in cleaned_line:
-                key, value_part = cleaned_line.split(":", 1)
-                value = value_part.split("#", 1)[0].strip()
-                self.data[key.strip()] = value
+    def initialize_state(self):
+        self.data = {
+            "CurrentStage": "Engineer",
+            "RequirementPointer": "1"
+        }
+        self.save()
 
-    def get(self, key, default=None):
-        return self.data.get(key, default)
+    def get(self, key):
+        return self.data.get(key)
 
     def set(self, key, value):
         self.data[key] = str(value)
-        key_found = False
-        for i, line in enumerate(self.lines):
-            if line.strip().startswith(key + ":"):
-                comment = ""
-                if "#" in line:
-                    comment = " #" + line.split("#", 1)[1].strip()
-                self.lines[i] = f"{key}: {value}{comment}"
-                key_found = True
-                return
-        if not key_found:
-            self.lines.append(f"{key}: {value}")
 
     def save(self):
-        with open(MASTER_FILE, "w") as f:
-            f.write("\n".join(self.lines) + "\n")
-
-class StateManager:
-    def __init__(self):
-        self.state = WorkflowState()
-        self.current_stage = self.state.get("CurrentStage")
-        self.repo = git_handler.get_repo()
-
-    def review(self):
-        last_commit_sha = self.state.get("LastCommitSHA")
-        current_commit_sha = git_handler.get_latest_commit_hash()
-        
-        if not last_commit_sha:
-            print("No previous commit SHA found. Showing diff from initial commit.")
-            last_commit_sha = git_handler.get_first_commit_hash()
-
-        print(f"Comparing {self.current_stage} changes from {last_commit_sha[:7]} to {current_commit_sha[:7]}...")
-        
-        diff_output = git_handler.get_diff(last_commit_sha, current_commit_sha)
-        print(diff_output)
-
-    def approve(self):
-        self._validate_stage()
-        self._run_pre_transition_actions()
-        
-        current_stage_index = STAGES.index(self.current_stage)
-        
-        if current_stage_index == len(STAGES) - 1:
-            self._complete_requirement_cycle()
-            self.state.set("CurrentStage", STAGES[0])
-        else:
-            next_stage = STAGES[current_stage_index + 1]
-            self.state.set("CurrentStage", next_stage)
-        
-        self.state.save()
-        self._run_post_transition_actions()
-        
-        print(f"Approved. Moved to {self.state.get('CurrentStage')} stage.")
-
-    def _validate_stage(self):
-        print(f"Validating stage: {self.current_stage}")
-        
-        deliverable_path = DELIVERABLE_PATHS.get(self.current_stage)
-        if not deliverable_path or not os.path.exists(deliverable_path) or not os.listdir(deliverable_path):
-            print(f"ERROR: No deliverables found in {deliverable_path} for stage {self.current_stage}.", file=sys.stderr)
-            sys.exit(1)
-        
-        print(f"Deliverables found in {deliverable_path}.")
-
-        if self.current_stage == "Coder":
-            last_commit_sha = self.state.get("LastCommitSHA")
-            current_commit_sha = git_handler.get_latest_commit_hash()
-            if last_commit_sha == current_commit_sha:
-                print("ERROR: No new commits found for Coder stage.", file=sys.stderr)
-                sys.exit(1)
-            
-            diff_output = git_handler.get_diff(last_commit_sha, current_commit_sha, "src/")
-            if not diff_output.strip():
-                print("ERROR: No meaningful code changes detected in 'src/' directory.", file=sys.stderr)
-                sys.exit(1)
-            
-            print("Meaningful code changes detected.")
-
-        elif self.current_stage == "Validator":
-            print("Validating testing stage...")
-            # This check requires a 'tests' directory and a virtual environment with pytest installed.
-            if not os.path.exists("tests") or not os.listdir("tests"):
-                print("ERROR: No tests found in the 'tests' directory. Stage validation failed.", file=sys.stderr)
-                sys.exit(1)
-            
-            try:
-                # Ensure the command is executable and the venv exists
-                pytest_path = "./venv/bin/pytest"
-                if not os.access(pytest_path, os.X_OK):
-                    print(f"ERROR: '{pytest_path}' not found or not executable. Is the venv set up correctly?", file=sys.stderr)
-                    sys.exit(1)
-
-                command = [pytest_path, "tests"]
-                print(f"Running command: {' '.join(command)}")
-                result = subprocess.run(
-                    command,
-                    check=True,
-                    capture_output=True,
-                    text=True
-                )
-                print(result.stdout)
-                print("Pytest execution successful.")
-            except subprocess.CalledProcessError as e:
-                print("ERROR: Pytest execution failed.", file=sys.stderr)
-                print(e.stdout)
-                print(e.stderr, file=sys.stderr)
-                sys.exit(1)
-
-        elif self.current_stage == "Deployer":
-            print("Validating deployment stage...")
-            latest_commit = git_handler.get_latest_commit_hash()
-            
-            remote_tags = git_handler.get_remote_tags_with_commits()
-            if remote_tags:
-                tagged_commits = [tag_commit for tag, tag_commit in remote_tags]
-                if latest_commit not in tagged_commits:
-                    print(f"ERROR: The latest commit ({latest_commit[:7]}) has not been tagged and pushed to the remote.", file=sys.stderr)
-                    sys.exit(1)
-                
-                matching_tags = [tag for tag, tag_commit in remote_tags if tag_commit == latest_commit]
-                print(f"Deployment validation successful: Latest commit is tagged on remote with: {', '.join(matching_tags)}.")
-            else:
-                print("WARNING: Could not retrieve remote tags. Falling back to local tag check.")
-                local_tags = git_handler.get_local_tags_for_commit(latest_commit)
-                if not local_tags:
-                    print(f"ERROR: The latest commit ({latest_commit[:7]}) has not been tagged.", file=sys.stderr)
-                    print("No remote repository is configured or the tag has not been pushed.", file=sys.stderr)
-                    print("Please tag the commit locally (e.g., 'git tag -a v1.0 -m \"Release 1.0\"').", file=sys.stderr)
-                    sys.exit(1)
-                
-                print(f"Deployment validation successful: Latest commit is tagged locally with: {', '.join(local_tags)}.")
-
-        print("Stage validation successful.")
-
-    def _run_pre_transition_actions(self):
-        pass
-
-    def _run_post_transition_actions(self):
-        if self.current_stage == "Coder":
-            git_handler.save_current_commit_sha()
-
-    def _complete_requirement_cycle(self):
-        req_id = int(self.state.get("RequirementPointer"))
-        
-        os.makedirs("logs", exist_ok=True)
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        with open(APPROVAL_FILE, "a") as f:
-            f.write(f"Requirement {req_id} approved at {timestamp}\n")
-        print(f"[INFO] Logged approval for Requirement ID {req_id}.")
-        
-        if os.path.exists(REQUIREMENTS_FILE):
-            lines = open(REQUIREMENTS_FILE, "r").read().splitlines()
-            for i, line in enumerate(lines):
-                if f"ID {req_id}" in line and "[ ]" in line:
-                    lines[i] = line.replace("[ ]", "[x]", 1)
-                    with open(REQUIREMENTS_FILE, "w") as f:
-                        f.write("\n".join(lines) + "\n")
-                    print(f"Updated checkbox for Req ID {req_id} in {REQUIREMENTS_FILE}")
-                    break
-
-        next_req_id = req_id + 1
-        self.state.set("RequirementPointer", next_req_id)
-        print(f"[INFO] Advanced to next requirement: {next_req_id}.")
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.state_file, "w") as f:
+            for key, value in self.data.items():
+                f.write(f"{key}={value}\n")

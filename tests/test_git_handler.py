@@ -37,7 +37,7 @@ class TestGitHandler(unittest.TestCase):
             git_handler.push_to_remote()
         
         expected_url = 'https://ghp_fake_token@github.com/user/repo.git'
-        mock_repo.git.push.assert_called_once_with(expected_url, 'main')
+        mock_repo.git.push.assert_called_once_with(expected_url, 'main', '--tags', '--force')
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,3 +1,3 @@
-CurrentStage: Deployer
+CurrentStage: Coder
 Cycle: 1
-RequirementPointer: 3
+RequirementPointer: 4
