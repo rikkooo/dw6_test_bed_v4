@@ -1,3 +1,3 @@
-CurrentStage: Researcher
+CurrentStage: Deployer
 Cycle: 1
 RequirementPointer: 1

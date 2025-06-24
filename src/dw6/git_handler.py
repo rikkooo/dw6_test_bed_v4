@@ -1,59 +1,88 @@
-import subprocess
 import sys
 import os
 from pathlib import Path
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 from dotenv import load_dotenv
+import git
 from dw6.config import LAST_COMMIT_FILE
 
-def is_working_directory_clean():
-    """Checks if the git working directory is clean."""
+# Load environment variables from .env file
+load_dotenv()
+
+# --- Helper Functions ---
+
+def get_repo():
+    """Initializes and returns a git.Repo object, handling errors gracefully."""
     try:
-        result = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, check=True)
-        return result.stdout.strip() == ""
-    except subprocess.CalledProcessError as e:
-        print("ERROR: Failed to execute 'git status' command.", file=sys.stderr)
-        print(f"\n{e.stderr}", file=sys.stderr)
+        return git.Repo(Path.cwd(), search_parent_directories=True)
+    except git.InvalidGitRepositoryError:
+        print("ERROR: Not a Git repository. Please run 'git init' to start.", file=sys.stderr)
         sys.exit(1)
+    except git.NoSuchPathError:
+        print(f"ERROR: The path '{Path.cwd()}' does not exist.", file=sys.stderr)
+        sys.exit(1)
+
+def _get_authenticated_remote_url(repo):
+    """Constructs a remote URL with the GITHUB_TOKEN for authentication."""
+    token = os.getenv("GITHUB_TOKEN")
+    if not token:
+        print("ERROR: GITHUB_TOKEN not found in environment variables or .env file.", file=sys.stderr)
+        print("Please create a .env file with your GITHUB_TOKEN to push changes.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        remote_url = repo.remotes.origin.url
+        parsed_url = urlparse(remote_url)
+        # The token is injected into the netloc for https authentication
+        authenticated_url = parsed_url._replace(netloc=f"{token}@{parsed_url.netloc}").geturl()
+        return authenticated_url
+    except IndexError:
+        print("ERROR: 'origin' remote not found. Please add a remote repository.", file=sys.stderr)
+        sys.exit(1)
+
+# --- Core Git Functions (using GitPython) ---
+
+def is_working_directory_clean():
+    """Checks if the Git working directory is clean (no uncommitted changes)."""
+    repo = get_repo()
+    return not repo.is_dirty(untracked_files=True)
 
 def get_current_commit_sha():
     """Returns the SHA of the current HEAD commit."""
-    return subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
+    repo = get_repo()
+    return repo.head.commit.hexsha
 
 def has_new_commits():
-    """Checks if there are new commits since the last recorded SHA."""
+    """Checks if there are new commits since the last recorded SHA in the tracking file."""
     if not LAST_COMMIT_FILE.exists():
-        print("ERROR: Cannot determine last approved commit. Tracking file not found.", file=sys.stderr)
-        print(f"Expected file at: {LAST_COMMIT_FILE}", file=sys.stderr)
+        print(f"ERROR: Tracking file not found at: {LAST_COMMIT_FILE}", file=sys.stderr)
         sys.exit(1)
 
     last_commit_sha = LAST_COMMIT_FILE.read_text().strip()
-    current_commit_sha = get_current_commit_sha()
-    return last_commit_sha != current_commit_sha
+    return last_commit_sha != get_current_commit_sha()
 
 def get_commit_stats():
-    """Returns statistics about the changes since the last approved commit."""
+    """Returns statistics about the changes (files, insertions, deletions) since the last approved commit."""
+    repo = get_repo()
     if not LAST_COMMIT_FILE.exists():
         return None
 
     last_commit_sha = LAST_COMMIT_FILE.read_text().strip()
-    current_commit_sha = get_current_commit_sha()
+    current_commit_sha = repo.head.commit.hexsha
 
     if last_commit_sha == current_commit_sha:
         return {"files_changed": 0, "insertions": 0, "deletions": 0}
 
     try:
-        diff_output = subprocess.check_output(
-            ["git", "diff", "--shortstat", last_commit_sha, current_commit_sha]
-        ).decode()
+        diff_summary = repo.git.diff('--shortstat', last_commit_sha, current_commit_sha)
         
         files_changed = 0
         insertions = 0
         deletions = 0
 
-        parts = diff_output.strip().split(', ')
+        parts = diff_summary.strip().split(', ')
         for part in parts:
-            if 'file changed' in part or 'files changed' in part:
+            if 'file' in part:
                 files_changed = int(part.split()[0])
             elif 'insertion' in part:
                 insertions = int(part.split()[0])
@@ -61,183 +90,164 @@ def get_commit_stats():
                 deletions = int(part.split()[0])
 
         return {"files_changed": files_changed, "insertions": insertions, "deletions": deletions}
-    except subprocess.CalledProcessError:
+    except git.GitCommandError:
         return None
+
+def get_remote_url():
+    """Returns the URL of the 'origin' remote."""
+    repo = get_repo()
+    try:
+        return repo.remotes.origin.url
+    except IndexError:
+        return None
+
+def get_repo_info_from_remote_url(remote_url):
+    """Extracts the owner and repo name from a GitHub remote URL."""
+    if not remote_url:
+        return None, None
+    path = urlparse(remote_url).path
+    if path.endswith('.git'):
+        path = path[:-4]
+    parts = path.strip('/').split('/')
+    return (parts[-2], parts[-1]) if len(parts) >= 2 else (None, None)
+
+def add_commit(message):
+    """Adds all changes and creates a commit."""
+    repo = get_repo()
+    if not repo.is_dirty(untracked_files=True):
+        print("[GIT] No changes to commit.")
+        return
+    try:
+        repo.git.add(A=True)
+        repo.index.commit(message)
+        print(f"[GIT] Committed changes with message: '{message}'")
+    except git.GitCommandError as e:
+        print(f"ERROR: Failed to create commit.\n{e}", file=sys.stderr)
+
+def push_to_remote():
+    """Pushes the current branch to the remote 'origin' using token authentication."""
+    repo = get_repo()
+    authenticated_url = _get_authenticated_remote_url(repo)
+    try:
+        repo.remotes.origin.push(repo.head.ref.name, authenticated_url)
+        print("[GIT] Successfully pushed changes to remote.")
+    except git.GitCommandError as e:
+        print(f"ERROR: Failed to push to remote.\n{e}", file=sys.stderr)
+        sys.exit(1)
+
+def create_and_push_tag(tag_name, message):
+    """Creates a new tag and pushes it to the remote using token authentication."""
+    repo = get_repo()
+    authenticated_url = _get_authenticated_remote_url(repo)
+    try:
+        new_tag = repo.create_tag(tag_name, message=message)
+        print(f"[GIT] Created tag '{tag_name}'.")
+        repo.remotes.origin.push(new_tag, authenticated_url)
+        print(f"[GIT] Pushed tag '{tag_name}' to remote.")
+    except git.GitCommandError as e:
+        print(f"ERROR: Failed to create or push tag '{tag_name}'.\n{e}", file=sys.stderr)
+        sys.exit(1)
+
+def get_all_tags_with_commits():
+    """Returns a dictionary of all local tags and their associated commit SHAs."""
+    repo = get_repo()
+    return {tag.name: tag.commit.hexsha for tag in repo.tags}
+
+def get_local_tags_for_commit(commit_sha):
+    """Returns a list of local tags pointing to a specific commit."""
+    repo = get_repo()
+    return [tag.name for tag in repo.tags if tag.commit.hexsha == commit_sha]
+
+def has_matching_tag(tag_name):
+    """Checks if a local Git tag with the given name exists."""
+    repo = get_repo()
+    return any(tag.name == tag_name for tag in repo.tags)
+
+def is_tag_pushed(tag_name):
+    """Checks if a specific tag has been pushed to the remote."""
+    repo = get_repo()
+    try:
+        # This is a simplification. A more robust check would involve fetching first.
+        return any(tag_name in ref.name for ref in repo.remotes.origin.refs)
+    except IndexError:
+        return False  # No 'origin' remote
+
+def initialize_git_repo():
+    """Initializes a git repository if one doesn't exist."""
+    if not (Path.cwd() / ".git").exists():
+        print("[GIT] This is not a Git repository. Initializing...")
+        repo = git.Repo.init(Path.cwd())
+        # Create an initial commit because some operations require it
+        repo.index.commit("Initial commit: Project setup")
+        print("[GIT] Repository initialized and initial commit created.")
+
+def get_latest_commit_hash(branch='master'):
+    """Returns the hash of the latest commit on the specified local branch."""
+    repo = get_repo()
+    try:
+        return repo.heads[branch].commit.hexsha
+    except IndexError:
+        print(f"ERROR: Branch '{branch}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+def get_remote_tags_with_commits():
+    """Returns a dictionary of remote tags and their corresponding commit SHAs after fetching."""
+    repo = get_repo()
+    try:
+        # Fetch tags from the 'origin' remote. Use --prune to remove stale remote-tracking references
+        repo.remotes.origin.fetch(tags=True, prune=True)
+        # Now, local repo.tags should be updated with remote tags
+        return {tag.name: tag.commit.hexsha for tag in repo.tags}
+    except git.GitCommandError as e:
+        print(f"ERROR: Could not fetch remote tags.\n{e}", file=sys.stderr)
+        return {}
+    except IndexError:
+        print("ERROR: 'origin' remote not found.", file=sys.stderr)
+        return {}
 
 def save_current_commit_sha():
     """Saves the current commit SHA to the tracking file."""
-    current_commit_sha = get_current_commit_sha()
-    # Ensure the parent directory (logs) exists
+    sha = get_current_commit_sha()
     LAST_COMMIT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    LAST_COMMIT_FILE.write_text(current_commit_sha)
-    print(f"[GIT] Saved current commit SHA: {current_commit_sha}")
+    LAST_COMMIT_FILE.write_text(sha)
+    print(f"[GIT] Saved current commit SHA to tracking file: {sha[:7]}")
 
 def commit_changes(requirement_id):
     """Adds and commits all changes with a standardized message."""
     print("[GIT] Committing approved code...")
-    subprocess.run(["git", "add", "."], check=True)
-    
-    result = subprocess.run(["git", "diff", "--staged", "--quiet"])
-    
-    if result.returncode == 0:
-        print("[GIT] Working directory is clean. No new commit will be created.")
-    else:
-        commit_message = f"feat(req-{requirement_id}): Coder stage submission for requirement {requirement_id}"
-        subprocess.run(["git", "commit", "-m", commit_message], check=True)
-        print(f"[GIT] Code committed: {commit_message}")
+    commit_message = f"feat(req-{requirement_id}): Coder stage submission for requirement {requirement_id}"
+    add_commit(commit_message)
 
-def commit_and_push_deliverable(deliverable_path, stage_name):
+def add_commit_files(message, files):
+    """Adds specific files and creates a commit."""
+    repo = get_repo()
+    try:
+        repo.index.add(files)
+        # Check if the index has changes compared to the last commit
+        if repo.index.diff(repo.head.commit):
+            repo.index.commit(message)
+            print(f"[GIT] Committed changes for files {files} with message: '{message}'")
+        else:
+            print(f"[GIT] No changes to commit for files: {files}")
+    except git.GitCommandError as e:
+        print(f"ERROR: Failed to create commit for files {files}.\n{e}", file=sys.stderr)
+
+def commit_and_push_deliverable(deliverable_path, stage_name, cycle):
     """Adds, commits, and pushes a single deliverable file."""
-    from dw6.state_manager import WorkflowState # Local import to avoid circular dependency
-    state = WorkflowState()
-    cycle = state.get("Cycle")
     commit_message = f"docs(cycle-{cycle}): Add {stage_name.lower()} deliverable for cycle {cycle}"
     
     print(f"[GIT] Committing deliverable: {deliverable_path}")
-    subprocess.run(["git", "add", deliverable_path], check=True)
-    subprocess.run(["git", "commit", "-m", commit_message], check=True)
-    print(f"[GIT] Committed with message: {commit_message}")
+    add_commit_files(commit_message, [deliverable_path])
     
-    # Optional: Push to remote
-    # push_to_remote() # This can be enabled if remote repo is configured
+    # Push the changes
+    print("[GIT] Pushing deliverable to remote...")
+    push_to_remote()
 
-def get_remote_repo_url():
-    """Retrieves the remote repository URL from the .env file."""
-    load_dotenv()
-    return os.getenv("GITHUB_REPO_URL")
-
-def get_latest_commit_hash(branch='master'):
-    """Returns the hash of the latest commit on the specified local branch."""
-    result = subprocess.run(['git', 'rev-parse', branch], capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        return None
-    return result.stdout.strip()
-
-def get_remote_tags_with_commits():
-    """Returns a dictionary of remote tags and the commit hashes they point to."""
-    result = subprocess.run(['git', 'ls-remote', '--tags', 'origin'], capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        return {}
-    
-    tags = {}
-    output = result.stdout.strip()
-    if not output:
-        return {}
-        
-    for line in output.split('\n'):
-        if 'refs/tags/' in line:
-            commit_hash, ref = line.split('\t')
-            tag_name = ref.split('refs/tags/')[-1]
-            if tag_name.endswith('^{}'):
-                tag_name = tag_name[:-3]
-                tags[tag_name] = commit_hash
-            elif tag_name not in tags:
-                tags[tag_name] = commit_hash
-    return tags
-
-def get_authenticated_url(repo_url):
-    """Injects the GitHub token into the repository URL for authentication."""
-    token = os.getenv("GITHUB_TOKEN")
-    if not token or not repo_url:
-        return None
-    
-    parts = urlparse(repo_url)
-    if parts.hostname != 'github.com':
-        return repo_url # Not a GitHub URL, return as is
-
-    authed_parts = parts._replace(netloc=f"{token}@{parts.hostname}")
-    return urlunparse(authed_parts)
-
-def push_to_remote():
-    """Pushes the current branch to the configured remote repository."""
-    repo_url = get_remote_repo_url()
-    if not repo_url:
-        print("GITHUB_REPO_URL not set in .env file. Skipping push.", file=sys.stderr)
-        return False
-
-    auth_url = get_authenticated_url(repo_url)
-    
-    branch_result = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True)
-    current_branch = branch_result.stdout.strip()
-
-    if not current_branch:
-        print("[ERROR] Could not determine the current git branch.", file=sys.stderr)
-        return False
-
-    push_url = auth_url if auth_url else repo_url
-
+def get_diff(from_commit, to_commit):
+    """Returns the diff between two commits as a string."""
+    repo = get_repo()
     try:
-        command = ["git", "push", push_url, current_branch]
-        subprocess.run(command, check=True, capture_output=True, text=True)
-        print("[GIT] Push successful.")
-        return True
-    except subprocess.CalledProcessError as e:
-        print("Error: Command 'git push' failed.", file=sys.stderr)
-        if "Authentication failed" in e.stderr:
-            print("Git push failed due to an authentication error. Please check your GITHUB_TOKEN.", file=sys.stderr)
-        else:
-            print(e.stderr, file=sys.stderr)
-        return False
-
-def get_remote_tags_with_commits():
-    """Returns a dictionary of remote tags and their corresponding commit SHAs."""
-    try:
-        result = subprocess.run(["git", "ls-remote", "--tags", "origin"], capture_output=True, text=True)
-        if result.returncode != 0:
-            return {}
-        tags_with_commits = {}
-        output = result.stdout.strip()
-        if not output:
-            return {}
-        for line in output.split('\n'):
-            parts = line.split('\t')
-            if len(parts) == 2:
-                commit_sha, tag_ref = parts
-                tag_name = tag_ref.split('/')[-1]
-                if not tag_name.endswith('^{}'):
-                    tags_with_commits[tag_name] = commit_sha
-        return tags_with_commits
-    except Exception:
-        return {}
-
-def get_local_tags_for_commit(commit_sha):
-    """Returns a list of local tags pointing to a specific commit."""
-    try:
-        result = subprocess.run(
-            ["git", "tag", "--points-at", commit_sha],
-            capture_output=True, text=True, check=True
-        )
-        tags = result.stdout.strip().split('\n')
-        return [tag for tag in tags if tag]  # Filter out empty strings
-    except subprocess.CalledProcessError:
-        return []
-
-def has_matching_tag(tag_name):
-    """Checks if a local Git tag with the given name exists."""
-    try:
-        result = subprocess.run(["git", "tag", "--list", tag_name], capture_output=True, text=True)
-        return tag_name in result.stdout.strip().split('\n')
-    except subprocess.CalledProcessError as e:
-        print("ERROR: Failed to execute 'git tag' command.", file=sys.stderr)
-        print(f"\n{e.stderr}", file=sys.stderr)
-        sys.exit(1)
-
-def is_tag_pushed(tag_name):
-    """Checks if a specific tag has been pushed to the remote."""
-    try:
-        result = subprocess.run(["git", "ls-remote", "--tags", "origin", tag_name], capture_output=True, text=True, check=True)
-        return tag_name in result.stdout
-    except subprocess.CalledProcessError as e:
-        print(f"ERROR: Failed to check remote for tag '{tag_name}'.", file=sys.stderr)
-        print(f"\n{e.stderr}", file=sys.stderr)
-        return False
-
-def initialize_git_repo():
-    """Initializes a git repository if one doesn't exist."""
-    git_dir = Path.cwd() / ".git"
-    if not git_dir.exists():
-        print("[GIT] This is not a Git repository. Initializing...")
-        subprocess.run(["git", "init"], check=True, capture_output=True)
-        subprocess.run(["git", "add", "."], check=True, capture_output=True)
-        subprocess.run(["git", "commit", "--allow-empty", "-m", "Initial commit: Project setup"], check=True, capture_output=True)
-        print("[GIT] Repository initialized and initial commit created.")
+        return repo.git.diff(from_commit, to_commit)
+    except git.GitCommandError as e:
+        print(f"ERROR: Could not get diff between {from_commit} and {to_commit}.\n{e}", file=sys.stderr)
+        return ""

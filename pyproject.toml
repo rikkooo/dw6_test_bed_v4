@@ -7,6 +7,7 @@ name = "dw6"
 version = "0.1.0"
 dependencies = [
     "python-dotenv",
+    "GitPython",
 ]
 
 [tool.setuptools.packages.find]
