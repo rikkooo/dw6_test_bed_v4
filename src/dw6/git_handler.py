@@ -42,6 +42,16 @@ def _get_authenticated_remote_url(repo):
 
 # --- Core Git Functions (using GitPython) ---
 
+def is_github_token_present():
+    """Checks for the GITHUB_TOKEN and returns True if present, False otherwise."""
+    token = os.getenv("GITHUB_TOKEN")
+    if not token:
+        print("ERROR: GITHUB_TOKEN not found in environment variables or .env file.", file=sys.stderr)
+        print("Please create a .env file in the project root with your GITHUB_TOKEN to proceed.", file=sys.stderr)
+        print("Example: GITHUB_TOKEN=ghp_YourTokenHere", file=sys.stderr)
+        return False
+    return True
+
 def is_working_directory_clean():
     """Checks if the Git working directory is clean (no uncommitted changes)."""
     repo = get_repo()
@@ -181,7 +191,7 @@ def initialize_git_repo():
         repo.index.commit("Initial commit: Project setup")
         print("[GIT] Repository initialized and initial commit created.")
 
-def get_latest_commit_hash(branch='master'):
+def get_latest_commit_hash(branch='main'):
     """Returns the hash of the latest commit on the specified local branch."""
     repo = get_repo()
     try:
@@ -193,16 +203,16 @@ def get_latest_commit_hash(branch='master'):
 def get_remote_tags_with_commits():
     """Returns a dictionary of remote tags and their corresponding commit SHAs after fetching."""
     repo = get_repo()
+    if not is_github_token_present():
+        sys.exit(1)
+    authenticated_url = _get_authenticated_remote_url(repo)
     try:
-        # Fetch tags from the 'origin' remote. Use --prune to remove stale remote-tracking references
-        repo.remotes.origin.fetch(tags=True, prune=True)
+        # Fetch tags from the authenticated remote. Use --prune to remove stale remote-tracking references
+        repo.git.fetch(authenticated_url, tags=True, prune=True)
         # Now, local repo.tags should be updated with remote tags
         return {tag.name: tag.commit.hexsha for tag in repo.tags}
     except git.GitCommandError as e:
         print(f"ERROR: Could not fetch remote tags.\n{e}", file=sys.stderr)
-        return {}
-    except IndexError:
-        print("ERROR: 'origin' remote not found.", file=sys.stderr)
         return {}
 
 def save_current_commit_sha():
@@ -231,6 +241,19 @@ def add_commit_files(message, files):
             print(f"[GIT] No changes to commit for files: {files}")
     except git.GitCommandError as e:
         print(f"ERROR: Failed to create commit for files {files}.\n{e}", file=sys.stderr)
+
+def push_to_remote(branch='main'):
+    """Pushes the specified branch to the 'origin' remote using token authentication."""
+    repo = get_repo()
+    if not is_github_token_present():
+        sys.exit(1)
+    authenticated_url = _get_authenticated_remote_url(repo)
+    try:
+        repo.git.push(authenticated_url, branch)
+        print(f"[GIT] Successfully pushed branch '{branch}' to remote.")
+    except git.GitCommandError as e:
+        print(f"ERROR: Failed to push to remote.\n{e}", file=sys.stderr)
+        sys.exit(1)
 
 def commit_and_push_deliverable(deliverable_path, stage_name, cycle):
     """Adds, commits, and pushes a single deliverable file."""

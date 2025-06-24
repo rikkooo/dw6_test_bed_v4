@@ -70,10 +70,14 @@ class WorkflowManager:
 
         elif self.current_stage == "Deployer":
             print("Validating deployment...")
-            latest_commit = git_handler.get_latest_commit_sha()
-            remote_tags = git_handler.get_remote_tags_for_commit(latest_commit)
-            if remote_tags:
-                print(f"Deployment validation successful: Latest commit is tagged with: {', '.join(remote_tags)}.")
+            if not git_handler.is_github_token_present():
+                sys.exit(1)
+            latest_commit = git_handler.get_latest_commit_hash()
+            all_remote_tags = git_handler.get_remote_tags_with_commits()
+            matching_tags = [tag for tag, commit in all_remote_tags.items() if commit == latest_commit]
+
+            if matching_tags:
+                                print(f"Deployment validation successful: Latest commit is tagged with: {', '.join(matching_tags)}.")
             else:
                 print("Warning: Could not retrieve remote tags. Falling back to local tag check.")
                 local_tags = git_handler.get_local_tags_for_commit(latest_commit)
