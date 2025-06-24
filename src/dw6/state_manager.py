@@ -2,6 +2,7 @@ import re
 import sys
 import os
 import subprocess
+from pathlib import Path
 
 from datetime import datetime, timezone
 
@@ -38,6 +39,30 @@ class WorkflowManager:
         self.state.save()
         print(f"--- Stage {self.current_stage} Approved. New Stage: {self.state.get('CurrentStage')} ---")
 
+    def _generate_coder_deliverable(self):
+        """Generates the coder deliverable file with a summary of changes."""
+        print("Generating Coder deliverable...")
+        changed_files, diff_string = git_handler.get_changes_since_last_commit()
+
+        if not changed_files:
+            print("No changes detected since the start of the Coder stage.")
+            return
+
+        deliverable_path = Path("deliverables/coding/coder_deliverable.md")
+        deliverable_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(deliverable_path, "w") as f:
+            f.write("# Coder Deliverable\n\n")
+            f.write("## Changed Files\n\n")
+            for file_path in changed_files:
+                f.write(f"- `{file_path}`\n")
+            f.write("\n## Git Diff\n\n")
+            f.write("```diff\n")
+            f.write(diff_string)
+            f.write("\n```")
+        
+        print(f"Coder deliverable created at: {deliverable_path}")
+
     def get_status(self):
         print("--- DW6 Workflow Status ---")
         for key, value in self.state.data.items():
@@ -56,7 +81,9 @@ class WorkflowManager:
 
     def _validate_stage(self):
         print(f"Validating deliverables for stage: {self.current_stage}")
-        if self.current_stage == "Validator":
+        if self.current_stage == "Coder":
+            self._generate_coder_deliverable()
+        elif self.current_stage == "Validator":
             print("Running tests...")
             # The command needs to be adapted for the venv
             venv_python = os.path.join(os.getcwd(), "venv", "bin", "python")

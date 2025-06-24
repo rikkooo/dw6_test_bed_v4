@@ -215,6 +215,12 @@ def get_remote_tags_with_commits():
         print(f"ERROR: Could not fetch remote tags.\n{e}", file=sys.stderr)
         return {}
 
+def get_last_commit_sha():
+    """Reads the last recorded commit SHA from the tracking file."""
+    if LAST_COMMIT_FILE.exists():
+        return LAST_COMMIT_FILE.read_text().strip()
+    return None
+
 def save_current_commit_sha():
     """Saves the current commit SHA to the tracking file."""
     sha = get_current_commit_sha()
@@ -265,6 +271,26 @@ def commit_and_push_deliverable(deliverable_path, stage_name, cycle):
     # Push the changes
     print("[GIT] Pushing deliverable to remote...")
     push_to_remote()
+
+def get_changes_since_last_commit():
+    """Returns a list of changed files and the diff string since the last commit."""
+    repo = get_repo()
+    last_commit_sha = get_last_commit_sha()
+    if not last_commit_sha:
+        print("ERROR: Could not find the last commit SHA.", file=sys.stderr)
+        return [], ""
+
+    try:
+        from_commit = repo.commit(last_commit_sha)
+        diff_index = from_commit.diff(repo.head.commit)
+        
+        changed_files = [diff.b_path for diff in diff_index]
+        diff_string = repo.git.diff(last_commit_sha, repo.head.commit)
+        
+        return changed_files, diff_string
+    except git.GitCommandError as e:
+        print(f"ERROR: Could not get changes since {last_commit_sha[:7]}.\n{e}", file=sys.stderr)
+        return [], ""
 
 def get_diff(from_commit, to_commit):
     """Returns the diff between two commits as a string."""
